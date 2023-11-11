@@ -3,7 +3,9 @@ import torch
 from typing import Optional, Tuple, Union, List
 from transformers import AutoTokenizer, AutoConfig, logging
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
+from transformers import LlamaForCausalLM
 from sven.hf import CodeGenForCausalLM, XGLMForCausalLM, GPT2LMHeadCustomModel, GPT2CustomConfig
+from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 
 class CodeGenPrefixCausalLM(CodeGenForCausalLM):
     def __init__(self, config):
@@ -249,7 +251,12 @@ class SantaPrefixLM(GPT2LMHeadCustomModel):
 
 def model_from_pretrained(lm_path, model_type, config):
     kwargs = dict()
-    if lm_path.startswith('Salesforce/codegen-'):
+    if 'CodeLlama' in lm_path:
+        if model_type == 'lm':
+            model_class = LlamaForCausalLM
+        else:
+            assert False
+    elif lm_path.startswith('Salesforce/codegen-'):
         if model_type == 'lm':
             model_class = CodeGenForCausalLM
         elif model_type == 'prefix':
@@ -281,10 +288,11 @@ def model_from_pretrained(lm_path, model_type, config):
     else:
         assert False
 
+    # model.parallelize() is now deprecated, revise to use device_map
     if config is None:
-        model = model_class.from_pretrained(lm_path, **kwargs)
+        model = model_class.from_pretrained(lm_path, **kwargs, device_map="auto")
     else:
-        model = model_class.from_pretrained(lm_path, **kwargs, config=config)
+        model = model_class.from_pretrained(lm_path, **kwargs, config=config, device_map="auto")
 
     return model
 
@@ -351,8 +359,13 @@ def load_model(model_type, path, is_training, args):
 
 def parallelize_model(model, args):
     if args.n_gpu > 1:
-        model.parallelize()
-        input_device = model.transformer.first_device
+        # parallelize() api is deprecated, use from_pretrained(xxx, device_map="auto") instead
+        # model.parallelize()
+        
+        # Llama model has no attribute 'transformer', get first device in another way
+        # input_device = model.transformer.first_device
+        device_map = model.hf_device_map
+        input_device = "cpu" if "cpu" in device_map.values() else "cuda:" + str(min(device_map.values()))
     else:
         model.to(args.device)
         input_device = args.device
